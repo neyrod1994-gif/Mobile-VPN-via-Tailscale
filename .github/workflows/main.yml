@@ -23,31 +23,43 @@ jobs:
         Remove-Item $installerPath -Force
         Write-Host "✅ Tailscale instalado"
 
-    - name: Configure Tailscale as Exit Node
+    - name: Configure Tailscale
       run: |
         Write-Host "🔗 Conectando a Tailscale..."
         
-        # PRIMERO conectarse a Tailscale con hostname
+        # Conectar a Tailscale
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vpn-$env:GITHUB_RUN_ID --accept-routes
         
-        # LUEGO configurar como exit node
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --exit-node
+        Write-Host "✅ Autenticación completada"
         
-        # Esperar y obtener IP
+        # Esperar y obtener IP con reintentos
         Write-Host "⏳ Esperando asignación de IP..."
-        Start-Sleep -Seconds 15
+        $tsIP = $null
+        $retries = 0
+        $maxRetries = 12  # 60 segundos máximo
         
-        $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-        $tsHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status | Select-String -Pattern "gh-vpn-" | ForEach-Object { $_.Line.Split()[0] }
+        while (-not $tsIP -and $retries -lt $maxRetries) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
+            $retries++
+            Write-Host "Intento $retries/$maxRetries - IP: $tsIP"
+        }
         
         if (-not $tsIP) {
-            Write-Host "❌ No se pudo obtener IP de Tailscale"
-            Write-Host "📋 Estado actual:"
+            Write-Host "❌ No se pudo obtener IP de Tailscale después de $maxRetries intentos"
+            Write-Host "📋 Estado de Tailscale:"
             & "$env:ProgramFiles\Tailscale\tailscale.exe" status
             exit 1
         }
         
-        Write-Host "✅ Conectado a Tailscale"
+        # Obtener hostname
+        $tsHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status | Select-String -Pattern "gh-vpn-" | ForEach-Object { $_.Line.Split()[0] }
+        
+        if (-not $tsHostname) {
+            $tsHostname = "gh-vpn-$env:GITHUB_RUN_ID"
+        }
+        
+        Write-Host "🎉 Conexión exitosa!"
         Write-Host "📡 IP de Tailscale: $tsIP"
         Write-Host "🏷️ Hostname: $tsHostname"
         
@@ -55,40 +67,71 @@ jobs:
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
         echo "TAILSCALE_HOSTNAME=$tsHostname" >> $env:GITHUB_ENV
 
-    - name: Enable Exit Node in Admin Panel
+    - name: Configure as Exit Node
+      run: |
+        Write-Host "⚙️ Configurando como Exit Node..."
+        
+        # Ahora configurar como exit node
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --exit-node
+        
+        Write-Host "✅ Configurado como Exit Node"
+        
+        # Verificar que sigue teniendo IP
+        $currentIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        Write-Host "🔍 IP actual: $currentIP"
+
+    - name: Wait for Manual Configuration
       run: |
         Write-Host ""
         Write-Host "⚙️ ===== CONFIGURACIÓN REQUERIDA ====="
         Write-Host "🔗 Ve a: https://login.tailscale.com/admin/machines"
-        Write-Host "💡 Busca el dispositivo: $env:TAILSCALE_HOSTNAME"
-        Write-Host "🔧 Haz clic en los 3 puntos → Edit route settings"
+        Write-Host "💡 Busca: $env:TAILSCALE_HOSTNAME"
+        Write-Host "🔧 Haz clic en ••• → Edit route settings"
         Write-Host "✅ Activa 'Use as exit node'"
-        Write-Host "======================================"
         Write-Host ""
-
-    - name: Wait for Manual Configuration
-      run: |
-        Write-Host "⏳ Esperando que actives 'Use as exit node' en el panel..."
-        Write-Host "⏰ Tienes 2 minutos para configurarlo"
-        Write-Host "📱 Mientras tanto, instala Tailscale en tu celular si no lo has hecho"
+        Write-Host "⏳ Esperando 2 minutos para que lo configures..."
+        Write-Host "======================================"
         
         # Esperar 2 minutos para dar tiempo a configurar
-        Start-Sleep -Seconds 120
+        for ($i = 120; $i -gt 0; $i--) {
+            Write-Host "Tiempo restante: $i segundos"
+            Start-Sleep -Seconds 1
+        }
+
+    - name: Verify Connection
+      run: |
+        Write-Host "🔍 Verificando conexión..."
+        
+        # Verificar IP final
+        $finalIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+        
+        Write-Host "✅ IP final: $finalIP"
+        Write-Host "📋 Estado:"
+        Write-Host $status
+        
+        if (-not $finalIP) {
+            Write-Host "❌ Error: No hay IP asignada"
+            exit 1
+        }
+        
+        # Actualizar la variable de entorno si cambió
+        echo "TAILSCALE_IP=$finalIP" >> $env:GITHUB_ENV
 
     - name: Maintain VPN Connection
       run: |
         Write-Host ""
         Write-Host "🎉 ===== VPN ACTIVA ====="
-        Write-Host "📱 Para usar en tu celular:"
-        Write-Host "1. Abre la app Tailscale en tu celular"
-        Write-Host "2. Mantén presionado este dispositivo:"
-        Write-Host "   💻 $env:TAILSCALE_HOSTNAME"
-        Write-Host "3. Selecciona 'Use as Exit Node'"
-        Write-Host "4. ¡Todo tu tráfico pasará por esta VPN!"
+        Write-Host "📡 IP del servidor: $env:TAILSCALE_IP"
+        Write-Host "🏷️ Hostname: $env:TAILSCALE_HOSTNAME"
         Write-Host ""
-        Write-Host "🛜 IP del servidor VPN: $env:TAILSCALE_IP"
-        Write-Host "⏰ Esta VPN estará activa por 10 MINUTOS"
-        Write-Host "🛑 Se apagará automáticamente a los 10 minutos"
+        Write-Host "📱 Para usar en tu celular:"
+        Write-Host "1. Abre Tailscale en tu celular"
+        Write-Host "2. Mantén presionado: $env:TAILSCALE_HOSTNAME"
+        Write-Host "3. Selecciona 'Use as Exit Node'"
+        Write-Host ""
+        Write-Host "⏰ Tiempo restante: 10 MINUTOS"
+        Write-Host "🛑 Se apagará automáticamente"
         Write-Host "=========================="
         Write-Host ""
         
@@ -99,18 +142,19 @@ jobs:
         
         while ((Get-Date) -lt $endTime) {
             $remaining = $endTime - (Get-Date)
-            $minutesRemaining = [math]::Round($remaining.TotalMinutes, 1)
+            $minutesRemaining = [math]::Max(0, [math]::Round($remaining.TotalMinutes, 1))
             
-            Write-Host "[$(Get-Date)] VPN activa - Tiempo restante: $minutesRemaining minutos - IP: $env:TAILSCALE_IP"
+            # Verificar IP actual
+            $currentIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Write-Host "[$(Get-Date)] Tiempo restante: $minutesRemaining min - IP: $currentIP"
             
             # Verificar que Tailscale siga funcionando
-            $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+            $statusResult = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "❌ Error: Tailscale desconectado"
                 exit 1
             }
             
-            # Esperar 30 segundos
             Start-Sleep -Seconds 30
         }
         
