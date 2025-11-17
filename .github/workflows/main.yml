@@ -23,14 +23,14 @@ jobs:
         Remove-Item $installerPath -Force
         Write-Host "✅ Tailscale instalado"
 
-    - name: Configure Tailscale
+    - name: Configure Tailscale as Exit Node
       run: |
         Write-Host "🔗 Conectando a Tailscale..."
         
-        # Conectar a Tailscale
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vpn-$env:GITHUB_RUN_ID --accept-routes
+        # Conectar a Tailscale y anunciarse como Exit Node
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vpn-$env:GITHUB_RUN_ID --advertise-exit-node --accept-routes
         
-        Write-Host "✅ Autenticación completada"
+        Write-Host "✅ Autenticación y anuncio como Exit Node completado"
         
         # Esperar y obtener IP con reintentos
         Write-Host "⏳ Esperando asignación de IP..."
@@ -62,23 +62,11 @@ jobs:
         Write-Host "🎉 Conexión exitosa!"
         Write-Host "📡 IP de Tailscale: $tsIP"
         Write-Host "🏷️ Hostname: $tsHostname"
+        Write-Host "🚀 Anunciado como Exit Node"
         
         # Guardar en variables de entorno
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
         echo "TAILSCALE_HOSTNAME=$tsHostname" >> $env:GITHUB_ENV
-
-    - name: Configure as Exit Node
-      run: |
-        Write-Host "⚙️ Configurando como Exit Node..."
-        
-        # Ahora configurar como exit node
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --exit-node
-        
-        Write-Host "✅ Configurado como Exit Node"
-        
-        # Verificar que sigue teniendo IP
-        $currentIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-        Write-Host "🔍 IP actual: $currentIP"
 
     - name: Wait for Manual Configuration
       run: |
@@ -94,29 +82,38 @@ jobs:
         
         # Esperar 2 minutos para dar tiempo a configurar
         for ($i = 120; $i -gt 0; $i--) {
-            Write-Host "Tiempo restante: $i segundos"
+            if (($i % 30) -eq 0) {
+                Write-Host "Tiempo restante: $i segundos"
+            }
             Start-Sleep -Seconds 1
         }
 
-    - name: Verify Connection
+    - name: Verify Exit Node Status
       run: |
-        Write-Host "🔍 Verificando conexión..."
+        Write-Host "🔍 Verificando estado del Exit Node..."
         
         # Verificar IP final
         $finalIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
         $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
         
         Write-Host "✅ IP final: $finalIP"
-        Write-Host "📋 Estado:"
+        Write-Host "📋 Estado completo:"
         Write-Host $status
+        
+        # Verificar si está anunciando exit node
+        $exitNodeStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+        $isAdvertisingExitNode = $exitNodeStatus.Self.ExitNodeOption
+        
+        Write-Host "🎯 Anunciando Exit Node: $isAdvertisingExitNode"
         
         if (-not $finalIP) {
             Write-Host "❌ Error: No hay IP asignada"
             exit 1
         }
         
-        # Actualizar la variable de entorno si cambió
-        echo "TAILSCALE_IP=$finalIP" >> $env:GITHUB_ENV
+        if (-not $isAdvertisingExitNode) {
+            Write-Host "⚠️  Advertencia: No se está anunciando como Exit Node"
+        }
 
     - name: Maintain VPN Connection
       run: |
