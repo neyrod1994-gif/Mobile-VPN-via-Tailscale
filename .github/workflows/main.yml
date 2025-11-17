@@ -1,0 +1,97 @@
+name: Mobile VPN via Tailscale
+
+on:
+  workflow_dispatch:  # Permite ejecución manual
+
+jobs:
+  mobile-vpn:
+    runs-on: windows-latest
+    timeout-minutes: 15  # 15 minutos máximo (10 + margen)
+
+    steps:
+    - name: Install Tailscale
+      run: |
+        # Descargar e instalar Tailscale
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        
+        Write-Host "📥 Descargando Tailscale..."
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+        
+        Write-Host "🔧 Instalando Tailscale..."
+        Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Tailscale instalado"
+
+    - name: Configure Tailscale as Exit Node
+      run: |
+        Write-Host "🔗 Conectando a Tailscale..."
+        
+        # Conectar a Tailscale y configurar como Exit Node
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --exit-node --hostname=gh-vpn-$env:GITHUB_RUN_ID --accept-routes
+        
+        # Esperar y obtener IP
+        Start-Sleep -Seconds 10
+        $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $tsHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status | Select-String -Pattern "gh-vpn-" | ForEach-Object { $_.Line.Split()[0] }
+        
+        Write-Host "✅ Conectado a Tailscale"
+        Write-Host "📡 IP de Tailscale: $tsIP"
+        Write-Host "🏷️ Hostname: $tsHostname"
+        
+        # Guardar en variables de entorno
+        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+        echo "TAILSCALE_HOSTNAME=$tsHostname" >> $env:GITHUB_ENV
+
+    - name: Enable Exit Node in Admin Panel
+      run: |
+        Write-Host "⚙️ Recuerda habilitar este dispositivo como Exit Node en:"
+        Write-Host "🔗 https://login.tailscale.com/admin/machines"
+        Write-Host "💡 Busca el dispositivo: $env:TAILSCALE_HOSTNAME"
+        Write-Host "💡 Y activa 'Use as exit node'"
+
+    - name: Maintain VPN Connection
+      run: |
+        Write-Host ""
+        Write-Host "🎉 ===== VPN ACTIVA ====="
+        Write-Host "📱 Para usar en tu celular:"
+        Write-Host "1. Instala Tailscale en tu celular"
+        Write-Host "2. Conéctate a la misma cuenta"
+        Write-Host "3. En la app, mantén presionado este dispositivo:"
+        Write-Host "   💻 $env:TAILSCALE_HOSTNAME"
+        Write-Host "4. Selecciona 'Use as Exit Node'"
+        Write-Host "5. ¡Todo tu tráfico pasará por esta VPN!"
+        Write-Host ""
+        Write-Host "🛜 IP del servidor VPN: $env:TAILSCALE_IP"
+        Write-Host "⏰ Esta VPN estará activa por 10 MINUTOS"
+        Write-Host "🛑 Se apagará automáticamente a los 10 minutos"
+        Write-Host "=========================="
+        Write-Host ""
+        
+        # Mantener el servicio activo por EXACTAMENTE 10 minutos
+        $startTime = Get-Date
+        $duration = New-TimeSpan -Minutes 10
+        $endTime = $startTime + $duration
+        
+        while ((Get-Date) -lt $endTime) {
+            $remaining = $endTime - (Get-Date)
+            $minutesRemaining = [math]::Round($remaining.TotalMinutes, 1)
+            
+            Write-Host "[$(Get-Date)] VPN activa - Tiempo restante: $minutesRemaining minutos - IP: $env:TAILSCALE_IP"
+            
+            # Verificar que Tailscale siga funcionando
+            $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "❌ Error: Tailscale desconectado"
+                exit 1
+            }
+            
+            # Esperar 30 segundos en lugar de 60 para mayor precisión
+            Start-Sleep -Seconds 30
+        }
+        
+        Write-Host ""
+        Write-Host "⏰ ===== TIEMPO COMPLETADO ====="
+        Write-Host "🛑 VPN apagándose automáticamente"
+        Write-Host "✅ Los 10 minutos han terminado"
+        Write-Host "================================"
